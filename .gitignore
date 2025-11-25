@@ -1,0 +1,63 @@
+# Data directories
+data/
+*/data/
+**/data/
+
+# Model checkpoints
+checkpoints/
+*/checkpoints/
+**/checkpoints/
+*.ckpt
+*.pth
+*.pt
+*.h5
+
+# Virtual environment
+venv/
+env/
+ENV/
+*.pyc
+__pycache__/
+*/__pycache__/
+**/__pycache__/
+
+# Weights & Biases
+wandb/
+*/wandb/
+**/wandb/
+
+# Logs
+logs/
+*/logs/
+**/logs/
+*.log
+*.out
+*.err
+
+# Python egg info
+*.egg-info/
+*/*.egg-info/
+**/*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+
+# Large data files
+*.nc
+*.zarr
+*.hdf5
+*.h5
+

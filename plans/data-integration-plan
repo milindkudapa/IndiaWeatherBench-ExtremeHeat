@@ -1,0 +1,239 @@
+# ERA5-Land Data Integration Plan
+
+## Phase 1: Preserve Current Work
+
+**Objective**: Archive all existing model weights, configurations, and training artifacts for future analysis.
+
+### Actions:
+
+1. **Create archive directory structure**
+
+- Create `/burg-archive/home/mck2199/ML-Project/archive_baseline_unet/`
+- Subdirectories: `checkpoints/`, `configs/`, `logs/`, `data/`
+
+2. **Archive trained model and metadata**
+
+- Copy [`india_benchmark/checkpoints/epoch_039.ckpt`](india_benchmark/checkpoints/epoch_039.ckpt) and [`last.ckpt`](india_benchmark/checkpoints/last.ckpt) (414MB each)
+- Copy [`configs/boundary_forcing_unet.yaml`](configs/boundary_forcing_unet.yaml)
+- Copy [`india_benchmark/config.yaml`](india_benchmark/config.yaml)
+- Archive relevant training logs from `logs/`
+
+3. **Document current performance**
+
+- Extract final validation metrics from training logs
+- Create `BASELINE_METRICS.md` documenting model performance
+
+---
+
+## Phase 2: ERA5-Land Data Acquisition Setup
+
+**Objective**: Set up infrastructure to download ERA5-Land data for the exact spatial/temporal region.
+
+### Actions:
+
+1. **Install CDS API**
+
+- Check if `cdsapi` is installed in venv
+- Install if needed: `pip install cdsapi`
+- Set up CDS API credentials (~/.cdsapirc)
+
+2. **Create download script**
+
+- New file: `scripts/download_era5_land.py`
+- Variables: `swvl1`, `swvl2`, `slhf`, `sshf`, `lai_hv`, `lai_lv`
+- Region: 6°N–37°N, 66°E–98°E (slightly expanded for interpolation)
+- Time period: 2000-01-01 to 2019-12-31
+- Temporal resolution: Hourly (will aggregate later)
+- Format: NetCDF
+
+3. **Create SLURM job for download**
+
+- New file: `scripts/download_era5_land.sbatch`
+- May take several hours depending on data size
+
+---
+
+## Phase 3: Data Preprocessing Pipeline
+
+**Objective**: Process ERA5-Land data to match IndiaWeatherBench specifications.
+
+### Actions:
+
+1. **Create preprocessing script**
+
+- New file: [`IndiaWeatherBench/india_benchmark/data_processing/process_era5_land.py`](IndiaWeatherBench/india_benchmark/data_processing/process_era5_land.py)
+- **Step 1 - Load NetCDF**: Read ERA5-Land NetCDF files using `xarray`
+- **Step 2 - Spatial Processing**:
+- Regrid from 0.1° to 0.12° using bilinear interpolation (`scipy.interpolate`)
+- Crop to exact IndiaWeatherBench domain (6°N–36.72°N, 66.6°E–97.25°E)
+- Result: 256×256 grid matching existing data
+- **Step 3 - Temporal Processing**:
+- Aggregate hourly → 6-hourly (00, 06, 12, 18 UTC)
+- Heat fluxes (slhf, sshf): Mean over 6-hour windows
+- Soil moisture (swvl1, swvl2): Instantaneous values at 00/06/12/18 UTC
+- LAI (lai_hv, lai_lv): Instantaneous values at 00/06/12/18 UTC
+- **Step 4 - Convert NetCDF → HDF5**:
+- For each timestamp, open corresponding existing HDF5 file (e.g., `2000-01-01_00.h5`)
+- Use `h5py.File(filename, 'a')` to append/modify existing file
+- Add 6 new datasets: swvl1, swvl2, slhf, sshf, lai_hv, lai_lv
+- Each dataset shape: (256, 256), dtype=float32, compression=None
+- Maintain consistency with existing variables in file
+
+2. **Integration approach - Modify existing HDF5 files**
+
+- **Recommended approach**: Add new variables to existing HDF5 files in-place
+- Current structure: Each `YYYY-MM-DD_HH.h5` file has 37-39 datasets (variables)
+- After integration: Each file will have 43-45 datasets (adding 6 ERA5-Land variables)
+- File size increase: ~11MB → ~13MB per file (~23k files total)
+- **Benefits**: No dataloader changes needed, existing [`india_dataset.py`](IndiaWeatherBench/india_benchmark/datasets/india_dataset.py) will automatically load new variables when specified in config
+- **Process**: Use Python's `h5py` library to open existing files in append mode ('a'), add new datasets
+
+3. **Create parallel processing job**
+
+- New file: `scripts/process_era5_land.sbatch`
+- Process train/val/test splits separately
+
+---
+
+## Phase 4: Update Normalization Parameters
+
+**Objective**: Compute statistics for new variables and update normalization configuration.
+
+### Actions:
+
+1. **Modify normalization script**
+
+- Update [`scripts/compute_norm_params.py`](scripts/compute_norm_params.py) or create new version
+- Compute mean, std, diff_mean, diff_std for 6 new variables
+- Use training split (2000-2017) only
+
+2. **Update norm_params.json**
+
+- Backup current [`data/indibench_h5/norm_params.json`](data/indibench_h5/norm_params.json)
+- Add statistics for: `swvl1`, `swvl2`, `slhf`, `sshf`, `lai_hv`, `lai_lv`
+- Maintain same format as existing variables
+
+3. **Create SLURM job**
+
+- New file: `scripts/compute_norm_params_era5land.sbatch`
+
+---
+
+## Phase 5: Update Model Configuration
+
+**Objective**: Prepare configuration for model retraining with expanded input channels.
+
+### Actions:
+
+1. **Create new config file**
+
+- New file: `configs/boundary_forcing_unet_era5land.yaml`
+- Based on [`configs/boundary_forcing_unet.yaml`](configs/boundary_forcing_unet.yaml)
+- Update `variables` list to include 6 new variables (37 → 43 variables)
+- Update `vars_to_log` if needed
+- Model architecture automatically adjusts input channels via `len(variables)`
+
+2. **Verify model compatibility**
+
+- Current UNet at [`IndiaWeatherBench/india_benchmark/models/networks/unet.py`](IndiaWeatherBench/india_benchmark/models/networks/unet.py) computes:
+- `in_channels = n_input_steps * len(variables)`
+- Will increase from 74 (2×37) to 86 (2×43)
+- No code changes needed - architecture is dynamic
+
+---
+
+## Phase 6: Initial Testing & Validation
+
+**Objective**: Verify data integration before full model retraining.
+
+### Actions:
+
+1. **Create data validation script**
+
+- New file: `scripts/validate_era5land_integration.py`
+- Checks:
+- All HDF5 files contain new variables
+- Shape consistency (256×256 for all variables)
+- No NaN or inf values
+- Reasonable value ranges for each variable
+- Normalization parameters applied correctly
+
+2. **Test dataloader**
+
+- Run quick test with [`IndiaWeatherBench/india_benchmark/datasets/datamodule.py`](IndiaWeatherBench/india_benchmark/datasets/datamodule.py)
+- Verify batch shapes: (B, T, C, H, W) where C=43
+- Check memory usage
+
+3. **Quick training test**
+
+- Run 1 epoch with `fast_dev_run=true` to verify pipeline
+- Use new config file
+
+---
+
+## Phase 7: Documentation & Next Steps
+
+**Objective**: Document the integration process and prepare for model retraining.
+
+### Actions:
+
+1. **Create integration documentation**
+
+- New file: `ERA5LAND_INTEGRATION.md`
+- Document:
+- Data sources and preprocessing steps
+- Variable descriptions and units
+- Any assumptions or decisions made
+- File structure changes
+- How to retrain model with new data
+
+2. **Update README**
+
+- Update [`README.md`](README.md) to reference ERA5-Land integration
+- Add instructions for using expanded dataset
+
+3. **Training recommendations**
+
+- Recommend starting with fine-tuning from baseline checkpoint
+- Or train from scratch for comparison
+- Suggest hyperparameter adjustments if needed
+
+---
+
+## Key Files to Create/Modify
+
+**New Files**:
+
+- `scripts/download_era5_land.py`
+- `scripts/download_era5_land.sbatch`
+- `IndiaWeatherBench/india_benchmark/data_processing/process_era5_land.py`
+- `scripts/process_era5_land.sbatch`
+- `scripts/compute_norm_params_era5land.sbatch`
+- `configs/boundary_forcing_unet_era5land.yaml`
+- `scripts/validate_era5land_integration.py`
+- `ERA5LAND_INTEGRATION.md`
+- `BASELINE_METRICS.md`
+
+**Modified Files**:
+
+- `data/indibench_h5/norm_params.json` (backed up first)
+- `README.md`
+
+**No Changes Needed**:
+
+- [`IndiaWeatherBench/india_benchmark/datasets/india_dataset.py`](IndiaWeatherBench/india_benchmark/datasets/india_dataset.py) (dynamic variable handling)
+- [`IndiaWeatherBench/india_benchmark/models/networks/unet.py`](IndiaWeatherBench/india_benchmark/models/networks/unet.py) (dynamic channel calculation)
+- Training scripts (use same script with new config)
+
+---
+
+## Estimated Resources
+
+- **Storage**: ~50-100 GB for raw ERA5-Land data + processed HDF5
+- **Compute Time**: 
+- Download: 2-6 hours
+- Processing: 4-8 hours (parallelized)
+- Normalization: 1-2 hours
+- **Prerequisites**:
+- CDS API account and credentials
+- Python packages: `cdsapi`, `xarray`, `netCDF4`, `scipy` (for interpolation)
