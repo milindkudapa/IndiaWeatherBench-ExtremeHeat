@@ -90,7 +90,9 @@ All baseline work has been archived:
 sbatch scripts/download_era5_land.sbatch
 ```
 
-Expected download time: 6-12 hours for 20 years of data.
+**Important**: Data is downloaded **month-by-month** (not year-by-year) to avoid CDS API size limits. This means 240 separate requests (20 years × 12 months).
+
+Expected download time: 12-24 hours for 20 years of data (240 monthly files).
 
 ### Phase 3: Data Preprocessing ✅
 
@@ -106,7 +108,7 @@ Expected download time: 6-12 hours for 20 years of data.
 - `scripts/process_era5_land.sbatch`: SLURM job for preprocessing
 
 **Processing Pipeline**:
-1. Load ERA5-Land NetCDF files (one per year)
+1. Load ERA5-Land NetCDF files (one per month)
 2. Regrid from 0.1° to 0.12° using bilinear interpolation
 3. Crop to exact IndiaWeatherBench grid (256×256)
 4. Aggregate hourly data to 6-hourly intervals:
@@ -121,7 +123,9 @@ Expected download time: 6-12 hours for 20 years of data.
 sbatch scripts/process_era5_land.sbatch
 ```
 
-Expected processing time: 4-8 hours with parallelization.
+**Note**: Processing handles monthly files (240 files total: 20 years × 12 months).
+
+Expected processing time: 6-12 hours (processing 240 monthly files).
 
 ### Phase 4: Normalization Parameters ✅
 
@@ -270,6 +274,8 @@ Adding ERA5-Land variables may improve:
 - **Invalid API key**: Check `~/.cdsapirc` formatting
 - **Terms not accepted**: Visit ERA5-Land dataset page and accept license
 - **Slow downloads**: CDS servers can be congested; try off-peak hours
+- **"Cost limits exceeded" error**: Fixed! Script now downloads month-by-month instead of year-by-year
+- **Request too large**: This should no longer occur with monthly downloads
 
 ### Processing Issues
 - **Memory errors**: Reduce number of workers or increase memory allocation
@@ -310,9 +316,11 @@ Adding ERA5-Land variables may improve:
   - Matches timestamp of other atmospheric variables
 
 ### Storage Requirements
-- Raw ERA5-Land NetCDF: ~50-100 GB (20 years, 6 variables)
+- Raw ERA5-Land NetCDF: ~50-100 GB (240 monthly files, 6 variables)
 - Updated HDF5 files: ~2 MB additional per file (~46 GB total increase)
 - Total additional storage: ~150 GB
+
+**Note**: Monthly files (~200-500 MB each) can be deleted after processing to save space.
 
 ## References
 

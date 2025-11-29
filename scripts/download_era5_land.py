@@ -24,12 +24,13 @@ import argparse
 from datetime import datetime, timedelta
 
 
-def download_era5_land_year(year, output_dir, variables, area):
+def download_era5_land_month(year, month, output_dir, variables, area):
     """
-    Download ERA5-Land data for a single year.
+    Download ERA5-Land data for a single month.
     
     Args:
         year (int): Year to download
+        month (int): Month to download (1-12)
         output_dir (str): Output directory
         variables (list): List of variable names
         area (list): Bounding box [north, west, south, east]
@@ -39,15 +40,14 @@ def download_era5_land_year(year, output_dir, variables, area):
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
     
-    output_file = os.path.join(output_dir, f'era5_land_{year}.nc')
+    output_file = os.path.join(output_dir, f'era5_land_{year}_{month:02d}.nc')
     
     # Check if file already exists
     if os.path.exists(output_file):
-        print(f"File {output_file} already exists. Skipping download.")
-        return
+        print(f"File {output_file} already exists. Skipping.")
+        return True
     
-    print(f"Downloading ERA5-Land data for year {year}...")
-    print(f"Output file: {output_file}")
+    print(f"Downloading ERA5-Land data for {year}-{month:02d}...")
     
     # Map to CDS API variable names
     cds_variable_mapping = {
@@ -61,8 +61,7 @@ def download_era5_land_year(year, output_dir, variables, area):
     
     cds_variables = [cds_variable_mapping[v] for v in variables]
     
-    # Generate all months and days for the year
-    months = [f'{m:02d}' for m in range(1, 13)]
+    # Days in month (simplified - will download all and NetCDF handles invalid days)
     days = [f'{d:02d}' for d in range(1, 32)]
     hours = [f'{h:02d}:00' for h in range(24)]  # All hours for hourly data
     
@@ -73,7 +72,7 @@ def download_era5_land_year(year, output_dir, variables, area):
                 'product_type': 'reanalysis',
                 'variable': cds_variables,
                 'year': str(year),
-                'month': months,
+                'month': f'{month:02d}',
                 'day': days,
                 'time': hours,
                 'area': area,  # [North, West, South, East]
@@ -81,14 +80,15 @@ def download_era5_land_year(year, output_dir, variables, area):
             },
             output_file
         )
-        print(f"Successfully downloaded data for year {year}")
+        print(f"✓ Successfully downloaded {year}-{month:02d}")
+        return True
         
     except Exception as e:
-        print(f"Error downloading data for year {year}: {e}")
+        print(f"✗ Error downloading {year}-{month:02d}: {e}")
         # Remove partial download if it exists
         if os.path.exists(output_file):
             os.remove(output_file)
-        raise
+        return False
 
 
 def main():
@@ -134,27 +134,53 @@ def main():
     print(f"Spatial domain: {area[0]}°N - {area[2]}°N, {area[1]}°E - {area[3]}°E")
     print(f"Variables: {', '.join(args.variables)}")
     print(f"Output directory: {args.output_dir}")
+    print(f"Strategy: Download month-by-month to avoid size limits")
     print("=" * 80)
     print()
     
-    # Download data year by year
+    # Download data month by month
+    total_months = (args.end_year - args.start_year + 1) * 12
+    successful = 0
+    failed = []
+    
     for year in range(args.start_year, args.end_year + 1):
-        try:
-            download_era5_land_year(
+        print(f"\n{'='*60}")
+        print(f"Year {year}")
+        print(f"{'='*60}")
+        
+        for month in range(1, 13):
+            success = download_era5_land_month(
                 year=year,
+                month=month,
                 output_dir=args.output_dir,
                 variables=args.variables,
                 area=area
             )
-        except Exception as e:
-            print(f"Failed to download year {year}. Error: {e}")
-            print("You may need to retry this year later.")
-            continue
+            
+            if success:
+                successful += 1
+            else:
+                failed.append(f"{year}-{month:02d}")
+            
+            # Small delay between requests to be nice to the server
+            if not success:
+                import time
+                time.sleep(5)
     
     print()
     print("=" * 80)
-    print("Download complete!")
-    print(f"Downloaded files are in: {args.output_dir}")
+    print("Download Summary")
+    print("=" * 80)
+    print(f"Total months: {total_months}")
+    print(f"Successful: {successful}")
+    print(f"Failed: {len(failed)}")
+    
+    if failed:
+        print("\nFailed downloads (you may need to retry these):")
+        for item in failed:
+            print(f"  - {item}")
+    
+    print(f"\nDownloaded files are in: {args.output_dir}")
     print("=" * 80)
 
 

@@ -105,17 +105,21 @@ The implementation is complete. To actually integrate the data and train, follow
 # 4. Accept ERA5-Land license terms
 ```
 
-### Step 2: Download ERA5-Land Data (6-12 hours)
+### Step 2: Download ERA5-Land Data (12-24 hours)
 ```bash
 sbatch scripts/download_era5_land.sbatch
 # Monitor: tail -f logs/download_era5land_*.out
 ```
 
-### Step 3: Process and Integrate Data (4-8 hours)
+**Note**: Downloads month-by-month (240 files) to avoid CDS API size limits.
+
+### Step 3: Process and Integrate Data (6-12 hours)
 ```bash
 sbatch scripts/process_era5_land.sbatch
 # Monitor: tail -f logs/process_era5land_*.out
 ```
+
+**Note**: Processes 240 monthly NetCDF files and integrates into HDF5 format.
 
 ### Step 4: Update Normalization Parameters (1-2 hours)
 ```bash

@@ -141,15 +141,18 @@ The project has been expanded to integrate soil moisture and land surface variab
 
 **Key Documents**:
 - [ERA5LAND_INTEGRATION.md](ERA5LAND_INTEGRATION.md) - Complete integration documentation
-- [CDS_API_SETUP.md](CDS_API_SETUP.md) - CDS API setup instructions
+- [GEE_SETUP.md](GEE_SETUP.md) - Google Earth Engine setup instructions
 - [archive_baseline_unet/BASELINE_METRICS.md](archive_baseline_unet/BASELINE_METRICS.md) - Baseline model performance
+
+**Data Source**: Using Google Earth Engine instead of Copernicus CDS for more reliable downloads.
 
 **Quick Start for ERA5-Land Integration**:
 ```bash
-# 1. Set up CDS API credentials (see CDS_API_SETUP.md)
+# 1. Authenticate with Google Earth Engine (see GEE_SETUP.md)
+earthengine authenticate
 
-# 2. Download ERA5-Land data
-sbatch scripts/download_era5_land.sbatch
+# 2. Download ERA5-Land data via Google Earth Engine
+sbatch scripts/download_era5_land_gee.sbatch
 
 # 3. Process and integrate data
 sbatch scripts/process_era5_land.sbatch
