@@ -72,10 +72,10 @@ model:
     RH850,
     RH700,
     RH500,
-    swvl1,
-    swvl2,
-    slhf,
-    sshf
+    swvl1,    # ERA5-Land: Soil moisture layer 1
+    swvl2,    # ERA5-Land: Soil moisture layer 2
+    slhf,     # ERA5-Land: Surface latent heat flux
+    sshf      # ERA5-Land: Surface sensible heat flux
   ]
   lr: 2e-4
   beta_1: 0.9
@@ -99,7 +99,7 @@ model:
 data:
   root_dir: /burg-archive/home/mck2199/ML-Project/data/indibench_h5
   variables: [
-    # Original IMDAA atmospheric variables (37 variables)
+    # Original IWB variables (37 total)
     TMP,
     UGRD,
     VGRD,
@@ -139,13 +139,13 @@ data:
     RH500,
     RH250,
     RH50,
-    # ERA5-Land variables (6 new variables)
-    swvl1,        # Volumetric soil water layer 1 (0-7 cm depth)
-    swvl2,        # Volumetric soil water layer 2 (7-28 cm depth)
-    slhf,         # Surface latent heat flux
-    sshf,         # Surface sensible heat flux
-    lai_hv,       # Leaf area index, high vegetation
-    lai_lv        # Leaf area index, low vegetation
+    # New ERA5-Land variables (6 total) - brings total to 43
+    swvl1,    # Volumetric soil water layer 1 (0-7 cm)
+    swvl2,    # Volumetric soil water layer 2 (7-28 cm)
+    slhf,     # Surface latent heat flux (W/m²)
+    sshf,     # Surface sensible heat flux (W/m²)
+    lai_hv,   # Leaf area index, high vegetation
+    lai_lv    # Leaf area index, low vegetation
   ]
   lead_time: 6
   data_freq: 6
@@ -155,6 +155,4 @@ data:
   batch_size: 2
   num_workers: 4
   pin_memory: False
-
-
 
