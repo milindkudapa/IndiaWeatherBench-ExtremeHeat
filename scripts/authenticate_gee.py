@@ -2,12 +2,14 @@
 """
 Interactive authentication for Google Earth Engine.
 Run this script interactively to authenticate.
+
+Includes scopes for Google Drive export (required for batch exports).
 """
 
 import ee
 
 print("=" * 80)
-print("Google Earth Engine Authentication")
+print("Google Earth Engine Authentication (with Drive Export)")
 print("=" * 80)
 print()
 print("This script will help you authenticate with Google Earth Engine.")
@@ -17,12 +19,24 @@ print("  2. Sign in with your Google account")
 print("  3. Copy the authorization code")
 print("  4. Paste it here")
 print()
+print("Requesting scopes:")
+print("  - Earth Engine API access")
+print("  - Google Drive export (for batch exports)")
+print("  - Cloud Platform")
+print()
 print("=" * 80)
 print()
 
 try:
-    # Try to authenticate
-    ee.Authenticate(auth_mode='notebook')
+    # Try to authenticate with Drive scopes
+    ee.Authenticate(
+        auth_mode='notebook',
+        scopes=[
+            'https://www.googleapis.com/auth/earthengine',
+            'https://www.googleapis.com/auth/devstorage.full_control',
+            'https://www.googleapis.com/auth/cloud-platform'
+        ]
+    )
     print()
     print("✓ Authentication successful!")
     print()
