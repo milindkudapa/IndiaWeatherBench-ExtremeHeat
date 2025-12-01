@@ -7,7 +7,7 @@
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=2
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem-per-cpu=8G
 #SBATCH --gres=gpu:2
 #SBATCH --constraint=a100
 #SBATCH --mail-type=ALL
@@ -25,6 +25,9 @@ echo ""
 # Activate virtual environment
 source /burg-archive/home/mck2199/ML-Project/venv/bin/activate
 
+# Disable HDF5 file locking for parallel dataloader access
+export HDF5_USE_FILE_LOCKING=FALSE
+
 # Navigate to project directory
 cd /burg-archive/home/mck2199/ML-Project/IndiaWeatherBench
 
@@ -36,21 +39,23 @@ echo "Configuration:"
 echo "  Config: boundary_forcing_unet_era5land.yaml"
 echo "  Variables: 45 (37 IWB + 6 ERA5-Land + 2 static)"
 echo "  Input channels: 90 (2 steps × 45 vars)"
+echo "  Batch size: 16 per GPU (32 effective)"
+echo "  Learning rate: 8e-4 (scaled for larger batch)"
+echo "  Data workers: 0 (single-process to avoid HDF5 issues)"
 echo "  Checkpoints: $ERA5_CHECKPOINT_DIR"
 echo ""
 
 # Run the training with DDP (Distributed Data Parallel)
-# Using srun to properly launch distributed training
-# Separate wandb project for ERA5-Land experiments
+# Fixed: Removed 3 problematic files (1 missing ERA5-Land, 2 corrupted)
+# Now all files are clean and DDP should work!
 srun python train_boundary_forcing.py \
     --config /burg-archive/home/mck2199/ML-Project/configs/boundary_forcing_unet_era5land.yaml \
     --trainer.devices=2 \
     --trainer.default_root_dir=$ERA5_CHECKPOINT_DIR \
-    --data.batch_size=12 \
-    --model.lr=6e-4 \
-    --model.wandb_project="india-weatherbench-era5land" \
-    --model.wandb_run_name="unet_era5land_45vars"
-
+    --data.batch_size=16 \
+    --model.lr=8e-4 \
+    --data.num_workers=0
+    
 echo ""
 echo "=========================================="
 echo "Training completed at $(date)"
