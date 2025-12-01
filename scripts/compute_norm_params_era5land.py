@@ -29,7 +29,7 @@ def get_h5_files_for_period(h5_dir, start_year=2000, end_year=2017):
     Get all HDF5 files within the training period.
     
     Args:
-        h5_dir: Directory containing HDF5 files
+        h5_dir: Base directory containing train/val/test subdirectories with HDF5 files
         start_year: Start year (inclusive)
         end_year: End year (inclusive)
     
@@ -38,7 +38,15 @@ def get_h5_files_for_period(h5_dir, start_year=2000, end_year=2017):
     """
     all_files = []
     
-    for fname in sorted(os.listdir(h5_dir)):
+    # IWB files are organized in train/val/test subdirectories
+    # Training period is in the 'train' subdirectory
+    train_dir = os.path.join(h5_dir, 'train')
+    
+    if not os.path.exists(train_dir):
+        print(f"Warning: Training directory not found: {train_dir}")
+        return all_files
+    
+    for fname in sorted(os.listdir(train_dir)):
         if not fname.endswith('.h5'):
             continue
         
@@ -48,7 +56,7 @@ def get_h5_files_for_period(h5_dir, start_year=2000, end_year=2017):
             year = int(date_str.split('-')[0])
             
             if start_year <= year <= end_year:
-                all_files.append(os.path.join(h5_dir, fname))
+                all_files.append(os.path.join(train_dir, fname))
         except:
             continue
     
