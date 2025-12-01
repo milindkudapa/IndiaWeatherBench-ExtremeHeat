@@ -8,7 +8,6 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=48G
-#SBATCH --partition=glab1
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mck2199@columbia.edu
 

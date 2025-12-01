@@ -18,6 +18,7 @@ import os
 import argparse
 import numpy as np
 import xarray as xr
+import netCDF4
 import h5py
 import zipfile
 from scipy import interpolate
@@ -46,12 +47,46 @@ VARIABLES = ['swvl1', 'swvl2', 'slhf', 'sshf', 'lai_hv', 'lai_lv']
 FLUX_VARIABLES = ['slhf', 'sshf']
 
 
-def extract_netcdf_from_zip(zip_path, temp_dir):
-    """Extract NetCDF file from ZIP archive."""
+def extract_netcdf_from_zip(zip_path, extraction_base_dir):
+    """
+    Extract NetCDF file from ZIP archive directly to a unique filename.
+    
+    Args:
+        zip_path: Path to ZIP file
+        extraction_base_dir: Base directory for extraction (uses scratch space)
+    
+    Returns:
+        str: Path to extracted NetCDF file
+    """
+    # Create unique filename based on ZIP file and timestamp
+    import uuid
+    import time
+    zip_basename = os.path.basename(zip_path).replace('.nc', '')
+    unique_id = uuid.uuid4().hex[:8]
+    extracted_filename = f'{zip_basename}_{unique_id}.nc'
+    extracted_path = os.path.join(extraction_base_dir, extracted_filename)
+    
+    # Extract data_0.nc directly to final path
     with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-        # Extract data_0.nc
-        zip_ref.extract('data_0.nc', temp_dir)
-    return os.path.join(temp_dir, 'data_0.nc')
+        with zip_ref.open('data_0.nc') as source:
+            with open(extracted_path, 'wb') as target:
+                shutil.copyfileobj(source, target)
+                # Ensure all data is written to disk
+                target.flush()
+                os.fsync(target.fileno())
+    
+    # Brief wait for filesystem to ensure file is fully accessible
+    time.sleep(0.1)
+    
+    # Verify the extracted file exists and has correct size
+    if not os.path.exists(extracted_path):
+        raise FileNotFoundError(f"Extracted file not found: {extracted_path}")
+    
+    file_size = os.path.getsize(extracted_path)
+    if file_size == 0:
+        raise RuntimeError(f"Extracted file is empty: {extracted_path}")
+    
+    return extracted_path
 
 
 def create_iwb_grid():
@@ -127,67 +162,128 @@ def process_era5land_netcdf(netcdf_path, h5_dir, target_lats, target_lons, year,
     Returns:
         Number of timesteps processed
     """
-    # Open ERA5-Land NetCDF
-    ds = xr.open_dataset(netcdf_path)
+    # Open ERA5-Land NetCDF using netCDF4 directly (bypasses xarray file opening issues)
+    import time
     
-    # Get coordinates
-    source_lats = ds['latitude'].values
-    source_lons = ds['longitude'].values
+    # Ensure file exists and is readable
+    if not os.path.exists(netcdf_path):
+        raise FileNotFoundError(f"NetCDF file not found: {netcdf_path}")
     
-    # Get times (should be 6-hourly at 00, 06, 12, 18 UTC)
-    times = pd.to_datetime(ds['valid_time'].values)
+    # Brief delay to ensure filesystem has completed write
+    time.sleep(0.2)
+    
+    # Open with netCDF4 library directly
+    try:
+        nc_file = netCDF4.Dataset(netcdf_path, 'r')
+    except Exception as e:
+        raise RuntimeError(f"Failed to open {netcdf_path} with netCDF4: {e}")
+    
+    # Manually extract data from netCDF4 to avoid xarray's caching issues
+    try:
+        # Get coordinates
+        source_lats = nc_file.variables['latitude'][:]
+        source_lons = nc_file.variables['longitude'][:]
+        times_raw = nc_file.variables['valid_time'][:]
+        
+        # Convert times to pandas datetime
+        time_unit = nc_file.variables['valid_time'].units
+        import cftime
+        if hasattr(nc_file.variables['valid_time'], 'calendar'):
+            calendar = nc_file.variables['valid_time'].calendar
+        else:
+            calendar = 'standard'
+        
+        times = netCDF4.num2date(times_raw, units=time_unit, calendar=calendar)
+        times = pd.to_datetime([t.strftime('%Y-%m-%d %H:%M:%S') for t in times])
+        
+    except Exception as e:
+        nc_file.close()
+        raise RuntimeError(f"Failed to read coordinates from {netcdf_path}: {e}")
+    
+    # Store the open file handle to read variables later
+    # (keeping dataset reference to prevent premature closure)
+    ds = None  # Not using xarray dataset anymore
     
     processed_count = 0
     
-    for time_idx, timestamp in enumerate(times):
-        # Create HDF5 filename matching IWB convention
-        h5_filename = timestamp.strftime('%Y-%m-%d_%H.h5')
-        h5_path = os.path.join(h5_dir, h5_filename)
-        
-        if not os.path.exists(h5_path):
-            print(f"  Warning: IWB file not found: {h5_filename}, skipping...")
-            continue
-        
-        # Process each variable
-        new_data = {}
-        for var in VARIABLES:
-            # Get data for this timestep
-            data = ds[var].isel(valid_time=time_idx).values
+    try:
+        for time_idx, timestamp in enumerate(times):
+            # Create HDF5 filename matching IWB convention
+            # IWB uses indices 0-3 for hours 00, 06, 12, 18 UTC
+            hour = timestamp.hour
+            if hour == 0:
+                hour_idx = '00'
+            elif hour == 6:
+                hour_idx = '01'
+            elif hour == 12:
+                hour_idx = '02'
+            elif hour == 18:
+                hour_idx = '03'
+            else:
+                # Skip non-6-hourly timesteps
+                continue
             
-            # Handle flux conversion (J/m² → W/m²)
-            if var in FLUX_VARIABLES:
-                # ERA5-Land fluxes are accumulated over preceding hour at each timestep
-                # For 6-hourly data, convert accumulated J/m² to average W/m²
-                data = convert_flux_units(data, hours_accumulated=6)
+            h5_filename = f"{timestamp.strftime('%Y-%m-%d')}_{hour_idx}.h5"
             
-            # Regrid to IWB grid
-            regridded = regrid_data(data, source_lats, source_lons, target_lats, target_lons)
+            # IWB files are organized in train/val/test subdirectories
+            # Determine which subdirectory based on year
+            file_year = timestamp.year
+            if file_year <= 2017:
+                subdir = 'train'
+            elif file_year == 2018:
+                subdir = 'val'
+            else:  # 2019+
+                subdir = 'test'
             
-            new_data[var] = regridded.astype(np.float32)
-        
-        # Add variables to HDF5 file
-        try:
-            with h5py.File(h5_path, 'a') as h5f:
-                for var, data in new_data.items():
-                    if var in h5f:
-                        # Variable already exists, overwrite
-                        del h5f[var]
+            h5_path = os.path.join(h5_dir, subdir, h5_filename)
+            
+            if not os.path.exists(h5_path):
+                # File doesn't exist, skip
+                continue
+            
+            # Process each variable
+            new_data = {}
+            for var in VARIABLES:
+                # Get data for this timestep from netCDF4 file
+                data = nc_file.variables[var][time_idx, :, :]
+                
+                # Handle flux conversion (J/m² → W/m²)
+                if var in FLUX_VARIABLES:
+                    # ERA5-Land fluxes are accumulated over preceding hour at each timestep
+                    # For 6-hourly data, convert accumulated J/m² to average W/m²
+                    data = convert_flux_units(data, hours_accumulated=6)
+                
+                # Regrid to IWB grid
+                regridded = regrid_data(data, source_lats, source_lons, target_lats, target_lons)
+                
+                new_data[var] = regridded.astype(np.float32)
+            
+            # Add variables to HDF5 file
+            try:
+                with h5py.File(h5_path, 'a') as h5f:
+                    for var, data in new_data.items():
+                        if var in h5f:
+                            # Variable already exists, overwrite
+                            del h5f[var]
+                        
+                        # Create dataset
+                        h5f.create_dataset(
+                            var,
+                            data=data,
+                            dtype=np.float32,
+                            compression=None  # Match IWB convention
+                        )
+                
+                processed_count += 1
                     
-                    # Create dataset
-                    h5f.create_dataset(
-                        var,
-                        data=data,
-                        dtype=np.float32,
-                        compression=None  # Match IWB convention
-                    )
-            
-            processed_count += 1
-            
-        except Exception as e:
-            print(f"  Error processing {h5_filename}: {e}")
-            continue
+            except Exception as e:
+                print(f"  Error processing {h5_filename}: {e}")
+                continue
     
-    ds.close()
+    finally:
+        # Always close the netCDF4 file
+        nc_file.close()
+    
     return processed_count
 
 
@@ -235,56 +331,59 @@ def main():
     
     print(f"\nProcessing {total_months} months from {args.start_year} to {args.end_year}...")
     
-    # Create temporary directory for extraction
-    temp_dir = tempfile.mkdtemp(prefix='era5land_extract_')
+    # Create extraction directory in project space (not /local or /tmp)
+    extraction_base_dir = os.path.join(args.era5land_dir, 'temp_extracted')
+    os.makedirs(extraction_base_dir, exist_ok=True)
+    print(f"Extraction directory: {extraction_base_dir}")
     
-    try:
-        with tqdm(total=total_months, desc="Overall progress") as pbar:
-            for year in range(args.start_year, args.end_year + 1):
-                for month in range(1, 13):
-                    # Find ERA5-Land ZIP file
-                    zip_filename = f'era5_land_hourly_{year}_{month:02d}.nc'
-                    zip_path = os.path.join(args.era5land_dir, zip_filename)
-                    
-                    if not os.path.exists(zip_path):
-                        print(f"\nWarning: Missing file {zip_filename}, skipping...")
-                        pbar.update(1)
-                        continue
-                    
-                    # Extract NetCDF
-                    try:
-                        netcdf_path = extract_netcdf_from_zip(zip_path, temp_dir)
-                    except Exception as e:
-                        print(f"\nError extracting {zip_filename}: {e}")
-                        pbar.update(1)
-                        continue
-                    
-                    # Process the month
-                    try:
-                        processed_count = process_era5land_netcdf(
-                            netcdf_path,
-                            args.h5_output_dir,
-                            target_lats,
-                            target_lons,
-                            year,
-                            month
-                        )
-                        total_processed += processed_count
-                        
-                    except Exception as e:
-                        print(f"\nError processing {zip_filename}: {e}")
-                    
-                    finally:
-                        # Clean up extracted file
-                        if os.path.exists(netcdf_path):
-                            os.remove(netcdf_path)
-                    
+    with tqdm(total=total_months, desc="Overall progress") as pbar:
+        for year in range(args.start_year, args.end_year + 1):
+            for month in range(1, 13):
+                # Find ERA5-Land ZIP file
+                zip_filename = f'era5_land_hourly_{year}_{month:02d}.nc'
+                zip_path = os.path.join(args.era5land_dir, zip_filename)
+                
+                if not os.path.exists(zip_path):
+                    print(f"\nWarning: Missing file {zip_filename}, skipping...")
                     pbar.update(1)
-                    pbar.set_postfix({'processed': total_processed})
+                    continue
+                
+                # Extract NetCDF to unique file in scratch space
+                netcdf_path = None
+                try:
+                    netcdf_path = extract_netcdf_from_zip(zip_path, extraction_base_dir)
+                except Exception as e:
+                    print(f"\nError extracting {zip_filename}: {e}")
+                    pbar.update(1)
+                    continue
+                
+                # Process the month
+                try:
+                    processed_count = process_era5land_netcdf(
+                        netcdf_path,
+                        args.h5_output_dir,
+                        target_lats,
+                        target_lons,
+                        year,
+                        month
+                    )
+                    total_processed += processed_count
+                    
+                except Exception as e:
+                    print(f"\nError processing {zip_filename}: {e}")
+                
+                finally:
+                    # Clean up extracted file
+                    if netcdf_path and os.path.exists(netcdf_path):
+                        os.remove(netcdf_path)
+                
+                pbar.update(1)
+                pbar.set_postfix({'processed': total_processed})
     
-    finally:
-        # Clean up temp directory
-        shutil.rmtree(temp_dir, ignore_errors=True)
+    # Clean up extraction base directory
+    if os.path.exists(extraction_base_dir):
+        print(f"\nCleaning up extraction directory...")
+        shutil.rmtree(extraction_base_dir, ignore_errors=True)
     
     print(f"\n{'='*80}")
     print(f"Processing complete!")
