@@ -2,7 +2,7 @@ seed_everything: 42
 
 # ---------------------------- TRAINER -------------------------------------------
 trainer:
-  default_root_dir: /burg-archive/home/mck2199/ML-Project/
+  default_root_dir: /burg-archive/home/mck2199/ML-Project/checkpoints_era5land
 
   precision: bf16-mixed
 
@@ -25,10 +25,11 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.wandb.WandbLogger
     init_args:
-      project: 'india_benchmark'
+      project: 'india_benchmark_era5land'  # Separate project for ERA5-Land experiments
       save_dir: ${trainer.default_root_dir}/logs
-      name: boundary_forcing_unet_era5land
+      name: boundary_forcing_unet_era5land_45vars
       mode: online  # Online mode - track progress at wandb.ai
+      tags: ['era5land', 'soil_moisture', 'heat_flux', 'lai', '45_variables']
 
   callbacks:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -37,7 +38,7 @@ trainer:
 
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "${trainer.default_root_dir}/checkpoints/boundary_forcing_unet_era5land"
+        dirpath: "${trainer.default_root_dir}/checkpoints"
         monitor: "val/w_mse_agg"
         mode: "min"
         save_top_k: 1
