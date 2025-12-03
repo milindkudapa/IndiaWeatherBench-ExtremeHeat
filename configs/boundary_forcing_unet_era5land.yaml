@@ -2,7 +2,7 @@ seed_everything: 42
 
 # ---------------------------- TRAINER -------------------------------------------
 trainer:
-  default_root_dir: /burg-archive/home/mck2199/ML-Project/checkpoints_era5land
+  default_root_dir: /burg-archive/home/mck2199/ML-Project/
 
   precision: bf16-mixed
 
@@ -25,11 +25,10 @@ trainer:
   logger:
     class_path: lightning.pytorch.loggers.wandb.WandbLogger
     init_args:
-      project: 'india_benchmark_era5land'  # Separate project for ERA5-Land experiments
+      project: 'india_benchmark'
       save_dir: ${trainer.default_root_dir}/logs
-      name: boundary_forcing_unet_era5land_45vars
+      name: boundary_forcing_unet_era5land
       mode: online  # Online mode - track progress at wandb.ai
-      tags: ['era5land', 'soil_moisture', 'heat_flux', 'lai', '45_variables']
 
   callbacks:
     - class_path: lightning.pytorch.callbacks.LearningRateMonitor
@@ -38,7 +37,7 @@ trainer:
 
     - class_path: lightning.pytorch.callbacks.ModelCheckpoint
       init_args:
-        dirpath: "${trainer.default_root_dir}/checkpoints"
+        dirpath: "${trainer.default_root_dir}/checkpoints/boundary_forcing_unet_era5land"
         monitor: "val/w_mse_agg"
         mode: "min"
         save_top_k: 1
@@ -73,10 +72,10 @@ model:
     RH850,
     RH700,
     RH500,
-    swvl1,    # ERA5-Land: Soil moisture layer 1
-    swvl2,    # ERA5-Land: Soil moisture layer 2
-    slhf,     # ERA5-Land: Surface latent heat flux
-    sshf      # ERA5-Land: Surface sensible heat flux
+    swvl1,
+    swvl2,
+    slhf,
+    sshf
   ]
   lr: 2e-4
   beta_1: 0.9
@@ -100,7 +99,7 @@ model:
 data:
   root_dir: /burg-archive/home/mck2199/ML-Project/data/indibench_h5
   variables: [
-    # Original IWB variables (37 total)
+    # Original IMDAA atmospheric variables (37 variables)
     TMP,
     UGRD,
     VGRD,
@@ -140,13 +139,13 @@ data:
     RH500,
     RH250,
     RH50,
-    # New ERA5-Land variables (6 total) - brings total to 43
-    swvl1,    # Volumetric soil water layer 1 (0-7 cm)
-    swvl2,    # Volumetric soil water layer 2 (7-28 cm)
-    slhf,     # Surface latent heat flux (W/m²)
-    sshf,     # Surface sensible heat flux (W/m²)
-    lai_hv,   # Leaf area index, high vegetation
-    lai_lv    # Leaf area index, low vegetation
+    # ERA5-Land variables (6 new variables)
+    swvl1,        # Volumetric soil water layer 1 (0-7 cm depth)
+    swvl2,        # Volumetric soil water layer 2 (7-28 cm depth)
+    slhf,         # Surface latent heat flux
+    sshf,         # Surface sensible heat flux
+    lai_hv,       # Leaf area index, high vegetation
+    lai_lv        # Leaf area index, low vegetation
   ]
   lead_time: 6
   data_freq: 6
@@ -156,4 +155,6 @@ data:
   batch_size: 2
   num_workers: 4
   pin_memory: False
+
+
 

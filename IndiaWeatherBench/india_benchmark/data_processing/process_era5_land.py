@@ -231,15 +231,15 @@ def process_era5land_file(
     print(f"Completed: {era5land_nc_path}")
 
 
-def process_month(args_tuple):
+def process_year(args_tuple):
     """Wrapper function for multiprocessing."""
-    year, month, era5land_dir, h5_output_dir, split, target_lats, target_lons = args_tuple
+    year, era5land_dir, h5_output_dir, split, target_lats, target_lons = args_tuple
     
-    era5land_file = os.path.join(era5land_dir, f'era5_land_{year}_{month:02d}.nc')
+    era5land_file = os.path.join(era5land_dir, f'era5_land_{year}.nc')
     
     if not os.path.exists(era5land_file):
         print(f"File not found: {era5land_file}")
-        return f"Skipped {year}-{month:02d} (file not found)"
+        return f"Skipped {year} (file not found)"
     
     try:
         process_era5land_file(
@@ -249,12 +249,12 @@ def process_month(args_tuple):
             target_lats,
             target_lons
         )
-        return f"Completed {year}-{month:02d}"
+        return f"Completed {year}"
     except Exception as e:
-        print(f"Error processing {year}-{month:02d}: {e}")
+        print(f"Error processing {year}: {e}")
         import traceback
         traceback.print_exc()
-        return f"Failed {year}-{month:02d}: {str(e)}"
+        return f"Failed {year}: {str(e)}"
 
 
 def determine_split(year):
@@ -321,32 +321,26 @@ def main():
     print(f"Longitude range: {target_lons[0]:.2f}°E - {target_lons[-1]:.2f}°E")
     print()
     
-    # Prepare processing tasks (month by month)
+    # Prepare processing tasks
     tasks = []
     for year in range(args.start_year, args.end_year + 1):
         split = determine_split(year)
-        for month in range(1, 13):
-            tasks.append((
-                year,
-                month,
-                args.era5land_dir,
-                args.h5_output_dir,
-                split,
-                target_lats,
-                target_lons
-            ))
+        tasks.append((
+            year,
+            args.era5land_dir,
+            args.h5_output_dir,
+            split,
+            target_lats,
+            target_lons
+        ))
     
-    # Process months (sequentially for now to avoid issues)
+    # Process years (sequentially for now to avoid issues)
     # Can be parallelized later if needed
     results = []
-    print(f"\nTotal months to process: {len(tasks)}")
-    print("=" * 80)
-    
-    for task in tqdm(tasks, desc="Processing months"):
-        result = process_month(task)
+    for task in tasks:
+        result = process_year(task)
         results.append(result)
-        if "Failed" in result or "Skipped" in result:
-            print(f"  {result}")
+        print(result)
     
     print()
     print("=" * 80)

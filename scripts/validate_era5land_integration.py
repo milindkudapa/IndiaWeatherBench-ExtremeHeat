@@ -1,345 +1,326 @@
 #!/usr/bin/env python3
 """
-Validate ERA5-Land integration with IndiaWeatherBench HDF5 dataset.
+Validate ERA5-Land integration with IndiaWeatherBench dataset.
 
-This script checks:
-1. All HDF5 files contain the new ERA5-Land variables
-2. Shape consistency (256×256 for all variables)
-3. No NaN or inf values in non-ocean regions
-4. Reasonable value ranges for each variable
-5. Temporal continuity
-6. Normalization parameters are available
+This script performs several checks to ensure the ERA5-Land variables
+have been correctly integrated into the HDF5 files and can be loaded
+by the dataloader.
+
+Checks performed:
+1. Verify all HDF5 files contain ERA5-Land variables
+2. Check shape consistency (256x256 for all variables)
+3. Check for NaN or inf values
+4. Verify reasonable value ranges
+5. Test dataloader with new configuration
+6. Check normalization parameters
 """
 
 import os
 import sys
-import argparse
 import h5py
 import numpy as np
 import json
-from datetime import datetime, timedelta
+import argparse
+from glob import glob
 from tqdm import tqdm
-import pandas as pd
+
+# Add IndiaWeatherBench to path
+sys.path.insert(0, '/burg-archive/home/mck2199/ML-Project/IndiaWeatherBench')
+
+from india_benchmark.datasets.datamodule import IndiaDataModule
 
 
-# Expected ERA5-Land variables
-ERA5_LAND_VARS = ['swvl1', 'swvl2', 'slhf', 'sshf', 'lai_hv', 'lai_lv']
-
-# Expected value ranges (rough physical limits)
-VALUE_RANGES = {
-    'swvl1': (0.0, 1.0),      # Volumetric soil moisture (m³/m³)
-    'swvl2': (0.0, 1.0),      # Volumetric soil moisture (m³/m³)
-    'slhf': (-1000.0, 1000.0),  # Surface latent heat flux (W/m²)
-    'sshf': (-1000.0, 1000.0),  # Surface sensible heat flux (W/m²)
-    'lai_hv': (0.0, 10.0),    # Leaf area index (m²/m²)
-    'lai_lv': (0.0, 10.0)     # Leaf area index (m²/m²)
+# Expected value ranges for ERA5-Land variables (rough estimates)
+EXPECTED_RANGES = {
+    'swvl1': (0.0, 0.6),  # m³/m³ volumetric soil moisture
+    'swvl2': (0.0, 0.6),  # m³/m³ volumetric soil moisture
+    'slhf': (-500, 500),  # W/m² surface latent heat flux
+    'sshf': (-300, 300),  # W/m² surface sensible heat flux
+    'lai_hv': (0.0, 10.0),  # m²/m² leaf area index
+    'lai_lv': (0.0, 10.0),  # m²/m² leaf area index
 }
 
 
-def check_single_file(h5_path, expected_shape=(256, 256)):
+def check_h5_file(h5_path, era5_variables):
     """
     Check a single HDF5 file for ERA5-Land variables.
     
     Returns:
-        dict: Results of checks
+        dict: Status of checks
     """
-    results = {
-        'file': os.path.basename(h5_path),
-        'exists': False,
-        'vars_present': [],
-        'vars_missing': [],
-        'shape_ok': True,
-        'range_ok': True,
-        'has_nans': False,
-        'has_infs': False,
-        'errors': []
+    result = {
+        'path': h5_path,
+        'has_all_vars': True,
+        'missing_vars': [],
+        'shape_issues': [],
+        'nan_inf_issues': [],
+        'range_issues': []
     }
-    
-    if not os.path.exists(h5_path):
-        results['errors'].append('File not found')
-        return results
-    
-    results['exists'] = True
     
     try:
         with h5py.File(h5_path, 'r') as f:
             available_vars = list(f.keys())
             
-            # Check for ERA5-Land variables
-            for var in ERA5_LAND_VARS:
-                if var in available_vars:
-                    results['vars_present'].append(var)
-                    
+            # Check for presence of ERA5-Land variables
+            for var in era5_variables:
+                if var not in available_vars:
+                    result['has_all_vars'] = False
+                    result['missing_vars'].append(var)
+                else:
                     # Check shape
                     data = f[var][:]
-                    if data.shape != expected_shape:
-                        results['shape_ok'] = False
-                        results['errors'].append(
-                            f'{var} has shape {data.shape}, expected {expected_shape}'
+                    if data.shape != (256, 256):
+                        result['shape_issues'].append(
+                            f"{var}: shape is {data.shape}, expected (256, 256)"
                         )
                     
-                    # Check for NaN and Inf
-                    if np.isnan(data).any():
-                        results['has_nans'] = True
-                    if np.isinf(data).any():
-                        results['has_infs'] = True
-                        results['errors'].append(f'{var} contains infinite values')
+                    # Check for NaN/inf
+                    if np.any(np.isnan(data)) or np.any(np.isinf(data)):
+                        result['nan_inf_issues'].append(
+                            f"{var}: contains NaN or inf values"
+                        )
                     
-                    # Check value range (only for non-NaN values)
-                    valid_data = data[~np.isnan(data)]
-                    if len(valid_data) > 0:
-                        min_val, max_val = VALUE_RANGES[var]
-                        data_min, data_max = valid_data.min(), valid_data.max()
-                        
-                        if data_min < min_val * 1.5 or data_max > max_val * 1.5:  # Allow 50% margin
-                            results['range_ok'] = False
-                            results['errors'].append(
-                                f'{var} range [{data_min:.3f}, {data_max:.3f}] '
-                                f'outside expected [{min_val}, {max_val}]'
+                    # Check value range
+                    if var in EXPECTED_RANGES:
+                        vmin, vmax = EXPECTED_RANGES[var]
+                        data_min, data_max = np.nanmin(data), np.nanmax(data)
+                        # Allow some tolerance
+                        if data_min < vmin * 2 or data_max > vmax * 2:
+                            result['range_issues'].append(
+                                f"{var}: range [{data_min:.3f}, {data_max:.3f}] "
+                                f"outside expected [{vmin}, {vmax}]"
                             )
-                else:
-                    results['vars_missing'].append(var)
     
     except Exception as e:
-        results['errors'].append(f'Error reading file: {str(e)}')
+        result['error'] = str(e)
     
-    return results
+    return result
 
 
-def check_temporal_continuity(h5_dir, start_date, end_date):
+def check_all_h5_files(data_dir, era5_variables, sample_size=100):
     """
-    Check that ERA5-Land data exists for all expected timesteps.
+    Check a sample of HDF5 files for ERA5-Land variables.
     """
-    print("\nChecking temporal continuity...")
+    print("=" * 80)
+    print("Checking HDF5 files for ERA5-Land variables...")
+    print("=" * 80)
     
-    current_date = start_date
-    missing_files = []
-    total_timesteps = 0
+    all_issues = []
     
-    while current_date <= end_date:
-        for hour in [0, 6, 12, 18]:
-            h5_filename = f"{current_date.strftime('%Y-%m-%d')}_{hour:02d}.h5"
-            h5_path = os.path.join(h5_dir, h5_filename)
-            
-            if not os.path.exists(h5_path):
-                missing_files.append(h5_filename)
-            
-            total_timesteps += 1
+    for split in ['train', 'val', 'test']:
+        split_dir = os.path.join(data_dir, split)
+        if not os.path.exists(split_dir):
+            print(f"\nWarning: {split} directory not found: {split_dir}")
+            continue
         
-        current_date += timedelta(days=1)
+        h5_files = sorted(glob(os.path.join(split_dir, "*.h5")))
+        
+        # Sample files
+        if len(h5_files) > sample_size:
+            import random
+            random.seed(42)
+            h5_files = random.sample(h5_files, sample_size)
+        
+        print(f"\n{split.upper()} split: Checking {len(h5_files)} files...")
+        
+        has_era5_count = 0
+        
+        for h5_file in tqdm(h5_files, desc=f"Checking {split}"):
+            result = check_h5_file(h5_file, era5_variables)
+            
+            if result['has_all_vars']:
+                has_era5_count += 1
+            
+            # Collect issues
+            if not result['has_all_vars'] or result['shape_issues'] or \
+               result['nan_inf_issues'] or result['range_issues']:
+                all_issues.append(result)
+        
+        print(f"  Files with all ERA5-Land variables: {has_era5_count}/{len(h5_files)}")
     
-    print(f"  Total expected timesteps: {total_timesteps}")
-    print(f"  Missing files: {len(missing_files)}")
-    
-    if missing_files and len(missing_files) <= 10:
-        print(f"  Missing file examples: {missing_files[:10]}")
-    
-    return len(missing_files) == 0
+    return all_issues
 
 
-def check_normalization_params(norm_params_path):
+def check_normalization_params(norm_params_path, era5_variables):
     """
-    Check if normalization parameters include ERA5-Land variables.
+    Check that normalization parameters include ERA5-Land variables.
     """
-    print("\nChecking normalization parameters...")
+    print("\n" + "=" * 80)
+    print("Checking normalization parameters...")
+    print("=" * 80)
     
     if not os.path.exists(norm_params_path):
-        print(f"  ⚠ Normalization file not found: {norm_params_path}")
+        print(f"ERROR: Normalization parameters not found: {norm_params_path}")
         return False
     
     with open(norm_params_path, 'r') as f:
         norm_params = json.load(f)
     
-    missing_vars = []
-    for var in ERA5_LAND_VARS:
-        if var not in norm_params:
-            missing_vars.append(var)
+    all_vars_present = True
+    for var in era5_variables:
+        if var not in norm_params['mean']:
+            print(f"  ERROR: {var} not in normalization parameters")
+            all_vars_present = False
         else:
-            # Check that required statistics are present
-            required_stats = ['mean', 'std', 'diff_mean', 'diff_std']
-            for stat in required_stats:
-                if stat not in norm_params[var]:
-                    print(f"  ⚠ {var} missing statistic: {stat}")
+            print(f"  ✓ {var}:")
+            print(f"    mean: {norm_params['mean'][var]:.6f}")
+            print(f"    std:  {norm_params['std'][var]:.6f}")
     
-    if missing_vars:
-        print(f"  ⚠ Missing variables in norm_params.json: {missing_vars}")
-        print(f"  → Run compute_norm_params.py to update normalization")
-        return False
-    else:
-        print(f"  ✓ All ERA5-Land variables have normalization parameters")
+    return all_vars_present
+
+
+def test_dataloader(config_path, era5_variables):
+    """
+    Test loading data with the new configuration.
+    """
+    print("\n" + "=" * 80)
+    print("Testing dataloader with ERA5-Land variables...")
+    print("=" * 80)
+    
+    try:
+        import yaml
+        import torch
+        
+        # Load config
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Create datamodule
+        datamodule = IndiaDataModule(
+            **config['data']
+        )
+        
+        datamodule.setup()
+        
+        # Get a batch from training data
+        train_loader = datamodule.train_dataloader()
+        X, Y = next(iter(train_loader))
+        
+        print(f"\n✓ Successfully loaded a batch!")
+        print(f"  Input shape:  {X.shape}")  # Should be (B, T, C, H, W) where C=43
+        print(f"  Output shape: {Y.shape}")
+        
+        expected_channels = len(config['data']['variables'])
+        actual_channels = X.shape[2]
+        
+        if actual_channels == expected_channels:
+            print(f"  ✓ Number of channels matches: {actual_channels}")
+        else:
+            print(f"  ERROR: Expected {expected_channels} channels, got {actual_channels}")
+            return False
+        
+        # Check for NaN in batch
+        if torch.any(torch.isnan(X)) or torch.any(torch.isnan(Y)):
+            print("  ERROR: Batch contains NaN values!")
+            return False
+        else:
+            print("  ✓ No NaN values in batch")
+        
+        print("\n✓ Dataloader test passed!")
         return True
+        
+    except Exception as e:
+        print(f"\nERROR testing dataloader: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Validate ERA5-Land integration with IWB dataset'
+        description='Validate ERA5-Land integration'
     )
     parser.add_argument(
-        '--h5-dir',
+        '--data-dir',
         type=str,
-        required=True,
-        help='Directory containing IWB HDF5 files'
+        default='/burg-archive/home/mck2199/ML-Project/data/indibench_h5',
+        help='Path to HDF5 data directory'
     )
     parser.add_argument(
-        '--norm-params',
+        '--config',
         type=str,
-        default=None,
-        help='Path to norm_params.json (optional)'
+        default='/burg-archive/home/mck2199/ML-Project/configs/boundary_forcing_unet_era5land.yaml',
+        help='Path to new config file'
     )
     parser.add_argument(
         '--sample-size',
         type=int,
         default=100,
-        help='Number of files to sample for detailed checks (default: 100)'
+        help='Number of files to check per split'
     )
     parser.add_argument(
-        '--start-date',
-        type=str,
-        default='2000-01-01',
-        help='Start date for temporal check (YYYY-MM-DD)'
-    )
-    parser.add_argument(
-        '--end-date',
-        type=str,
-        default='2019-12-31',
-        help='End date for temporal check (YYYY-MM-DD)'
+        '--skip-dataloader-test',
+        action='store_true',
+        help='Skip dataloader test (useful if data not fully processed yet)'
     )
     
     args = parser.parse_args()
     
-    print("=" * 80)
-    print("ERA5-LAND INTEGRATION VALIDATION")
-    print("=" * 80)
-    print(f"HDF5 directory: {args.h5_dir}")
-    print(f"Sample size: {args.sample_size} files")
+    era5_variables = ['swvl1', 'swvl2', 'slhf', 'sshf', 'lai_hv', 'lai_lv']
     
-    # Get list of all HDF5 files
-    all_files = sorted([
-        f for f in os.listdir(args.h5_dir)
-        if f.endswith('.h5')
-    ])
-    
-    print(f"\nTotal HDF5 files found: {len(all_files)}")
-    
-    if len(all_files) == 0:
-        print("❌ No HDF5 files found!")
-        return 1
-    
-    # Sample files for detailed checks
-    sample_size = min(args.sample_size, len(all_files))
-    if len(all_files) > sample_size:
-        # Sample uniformly across the time period
-        indices = np.linspace(0, len(all_files) - 1, sample_size, dtype=int)
-        sample_files = [all_files[i] for i in indices]
-    else:
-        sample_files = all_files
-    
-    print(f"Checking {len(sample_files)} sample files...")
-    
-    # Check sample files
-    all_results = []
-    for fname in tqdm(sample_files, desc="Validating files"):
-        h5_path = os.path.join(args.h5_dir, fname)
-        result = check_single_file(h5_path)
-        all_results.append(result)
-    
-    # Aggregate results
     print("\n" + "=" * 80)
-    print("VALIDATION RESULTS")
+    print("ERA5-Land Integration Validation")
+    print("=" * 80)
+    print(f"Data directory: {args.data_dir}")
+    print(f"Config file: {args.config}")
+    print(f"ERA5-Land variables: {', '.join(era5_variables)}")
     print("=" * 80)
     
-    files_with_all_vars = sum(
-        1 for r in all_results 
-        if len(r['vars_present']) == len(ERA5_LAND_VARS)
-    )
-    files_with_no_vars = sum(
-        1 for r in all_results 
-        if len(r['vars_present']) == 0
-    )
-    files_with_errors = sum(1 for r in all_results if len(r['errors']) > 0)
+    # Check 1: HDF5 files
+    issues = check_all_h5_files(args.data_dir, era5_variables, args.sample_size)
     
-    print(f"\n📊 Variable Presence:")
-    print(f"  Files with all {len(ERA5_LAND_VARS)} ERA5-Land variables: {files_with_all_vars}/{len(sample_files)}")
-    print(f"  Files with no ERA5-Land variables: {files_with_no_vars}/{len(sample_files)}")
-    
-    # Count presence of each variable
-    var_counts = {var: 0 for var in ERA5_LAND_VARS}
-    for result in all_results:
-        for var in result['vars_present']:
-            var_counts[var] += 1
-    
-    print(f"\n  Variable-wise presence:")
-    for var, count in var_counts.items():
-        percentage = (count / len(sample_files)) * 100
-        print(f"    {var}: {count}/{len(sample_files)} ({percentage:.1f}%)")
-    
-    print(f"\n🔍 Data Quality:")
-    shape_ok = sum(1 for r in all_results if r['shape_ok'])
-    range_ok = sum(1 for r in all_results if r['range_ok'])
-    has_nans = sum(1 for r in all_results if r['has_nans'])
-    has_infs = sum(1 for r in all_results if r['has_infs'])
-    
-    print(f"  Shape correct (256×256): {shape_ok}/{len(sample_files)}")
-    print(f"  Value ranges OK: {range_ok}/{len(sample_files)}")
-    print(f"  Files with NaNs: {has_nans}/{len(sample_files)} (expected in ocean regions)")
-    print(f"  Files with Infs: {has_infs}/{len(sample_files)} (should be 0)")
-    
-    if files_with_errors > 0:
-        print(f"\n⚠ Errors found in {files_with_errors} files:")
-        for result in all_results:
-            if result['errors']:
-                print(f"  {result['file']}:")
-                for error in result['errors']:
-                    print(f"    - {error}")
-    
-    # Check temporal continuity
-    start_date = datetime.strptime(args.start_date, '%Y-%m-%d')
-    end_date = datetime.strptime(args.end_date, '%Y-%m-%d')
-    temporal_ok = check_temporal_continuity(args.h5_dir, start_date, end_date)
-    
-    # Check normalization parameters
-    norm_ok = True
-    if args.norm_params:
-        norm_ok = check_normalization_params(args.norm_params)
-    
-    # Final verdict
-    print("\n" + "=" * 80)
-    print("FINAL VERDICT")
-    print("=" * 80)
-    
-    all_checks_passed = (
-        files_with_all_vars == len(sample_files) and
-        files_with_errors == 0 and
-        has_infs == 0 and
-        temporal_ok and
-        norm_ok
-    )
-    
-    if all_checks_passed:
-        print("✅ ALL CHECKS PASSED!")
-        print("\nERA5-Land integration is complete and validated.")
-        print("Ready to train expanded model with 43 variables.")
-        return 0
+    if issues:
+        print("\n" + "=" * 80)
+        print("ISSUES FOUND:")
+        print("=" * 80)
+        for issue in issues[:10]:  # Show first 10
+            print(f"\nFile: {os.path.basename(issue['path'])}")
+            if issue.get('missing_vars'):
+                print(f"  Missing variables: {', '.join(issue['missing_vars'])}")
+            if issue.get('shape_issues'):
+                for msg in issue['shape_issues']:
+                    print(f"  Shape issue: {msg}")
+            if issue.get('nan_inf_issues'):
+                for msg in issue['nan_inf_issues']:
+                    print(f"  NaN/Inf issue: {msg}")
+            if issue.get('range_issues'):
+                for msg in issue['range_issues']:
+                    print(f"  Range issue: {msg}")
+        
+        if len(issues) > 10:
+            print(f"\n... and {len(issues) - 10} more files with issues")
     else:
-        print("⚠ SOME CHECKS FAILED")
-        print("\nIssues to address:")
-        if files_with_all_vars < len(sample_files):
-            print("  - Not all files contain ERA5-Land variables")
-            print("    → Run process_era5_land_netcdf.py to integrate data")
-        if files_with_errors > 0:
-            print("  - Some files have data quality issues")
-            print("    → Review errors above and reprocess affected files")
-        if has_infs > 0:
-            print("  - Some files contain infinite values")
-            print("    → Check preprocessing pipeline")
-        if not temporal_ok:
-            print("  - Missing timesteps detected")
-            print("    → Verify IWB dataset completeness")
-        if not norm_ok:
-            print("  - Normalization parameters incomplete")
-            print("    → Run compute_norm_params.py")
-        return 1
+        print("\n✓ All checked files passed basic validation!")
+    
+    # Check 2: Normalization parameters
+    norm_params_path = os.path.join(args.data_dir, 'norm_params.json')
+    norm_ok = check_normalization_params(norm_params_path, era5_variables)
+    
+    # Check 3: Dataloader (optional)
+    if not args.skip_dataloader_test:
+        dataloader_ok = test_dataloader(args.config, era5_variables)
+    else:
+        print("\nSkipping dataloader test (--skip-dataloader-test flag set)")
+        dataloader_ok = None
+    
+    # Summary
+    print("\n" + "=" * 80)
+    print("VALIDATION SUMMARY")
+    print("=" * 80)
+    print(f"HDF5 files check: {'✓ PASSED' if not issues else f'⚠ {len(issues)} issues found'}")
+    print(f"Normalization check: {'✓ PASSED' if norm_ok else '✗ FAILED'}")
+    if dataloader_ok is not None:
+        print(f"Dataloader check: {'✓ PASSED' if dataloader_ok else '✗ FAILED'}")
+    print("=" * 80)
+    
+    # Exit code
+    if issues or not norm_ok or (dataloader_ok is False):
+        sys.exit(1)
+    else:
+        sys.exit(0)
 
 
 if __name__ == '__main__':
-    sys.exit(main())
+    main()
+
+

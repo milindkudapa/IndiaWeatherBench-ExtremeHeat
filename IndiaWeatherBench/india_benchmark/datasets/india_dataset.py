@@ -58,8 +58,7 @@ class IndiaDataset(Dataset):
         all_frames = []
         for i in ids:
             frame_data = []
-            # Disable file locking for parallel dataloader access
-            with h5py.File(self.h5_files[i], "r", locking=False) as f:
+            with h5py.File(self.h5_files[i], "r") as f:
                 for var in self.variables:
                     frame_data.append(f[var][()])
             all_frames.append(np.stack(frame_data, axis=0))
